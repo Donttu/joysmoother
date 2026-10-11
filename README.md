@@ -41,10 +41,13 @@ Some games may also detect the physical controller, which can result in duplicat
 ## An example: Live for Speed
 
 Live for Speed is a good game in sense that it supports multiple controls, and allows you to customize your controls to be a hybrid from multiple controllers.
-When you start the program, the game shows you multiple controllers. Make sure you have not selected to use just one of them.
+When you start the program, the game shows you multiple controllers. Make sure you have not selected to use just one of them. Make sure it says atleast 2 controllers detected.
+<img width="745" height="64" alt="image" src="https://github.com/user-attachments/assets/98402e85-77ca-498e-b82a-793b91a1f518" />
 When you see atleast two contollers connected, just edit the steering axis to be the X-axis of the virtual controller.
 
 Within the game itself, you can see the effects of the software when you compare the X-axis values of the real controller and the virtual counterpart.
+
+In the game settings -> Misc -> change the "Analogue steer smooth" to something like 0.80 to smooth out the snappyness.
 
 ## Build and publish
 
