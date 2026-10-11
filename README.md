@@ -32,6 +32,8 @@ Accepted ranges: drift zone `0–10000`, velocity cutoff `0–1500`, and settle 
 - Windows with XInput support
 - A connected XInput-compatible controller
 - The signed ViGEmBus driver for virtual-controller mode
+    - https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0
+    - The future objective is to change this driver to something completely different
 
 The virtual controller is exposed as an Xbox 360 controller by ViGEm; its device label is determined by the virtual bus and is not renamed by JoySmoother.
 Some games may also detect the physical controller, which can result in duplicate or otherwise mixed input.
