@@ -7,14 +7,28 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Nefarius.ViGEm.Client;
+using Nefarius.ViGEm.Client.Exceptions;
 using Nefarius.ViGEm.Client.Targets;
 using Nefarius.ViGEm.Client.Targets.Xbox360;
+using Nefarius.ViGEm.Client.Targets.Xbox360.Exceptions;
 
 namespace JoySmoother;
 
 public partial class MainWindow : Window
 {
     private const int XInputSlotCount = 4;
+    private const int PollIntervalMilliseconds = 8;
+    private const int DisplayIntervalMilliseconds = 50;
+    private const int MinimumDriftZone = 0;
+    private const int MaximumDriftZone = 10000;
+    private const int MinimumVelocityCutoff = 0;
+    private const int MaximumVelocityCutoff = 1500;
+    private const int MinimumSettleDelayFrames = 1;
+    private const int MaximumSettleDelayFrames = 60;
+    private const int DefaultDriftZone = 2621;
+    private const int DefaultVelocityCutoff = 80;
+    private const int DefaultSettleDelayFrames = 8;
+
     private readonly DispatcherTimer _pollTimer;
     private readonly InputReading[] _latestReadings = new InputReading[XInputSlotCount];
 
@@ -24,9 +38,11 @@ public partial class MainWindow : Window
     private short _previousY;
     private int _stationaryFrames;
     private long _lastDisplayUpdate;
-    private int _driftZone = 2621;
-    private int _velocityCutoff = 80;
-    private int _settleDelayFrames = 8;
+    private int _driftZone = DefaultDriftZone;
+    private int _velocityCutoff = DefaultVelocityCutoff;
+    private int _settleDelayFrames = DefaultSettleDelayFrames;
+    private bool? _lastReportedInputConnection;
+    private bool _xInputAvailable = true;
     private bool _isRunning;
 
     public MainWindow()
@@ -41,7 +57,7 @@ public partial class MainWindow : Window
 
         _pollTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
-            Interval = TimeSpan.FromMilliseconds(8)
+            Interval = TimeSpan.FromMilliseconds(PollIntervalMilliseconds)
         };
         _pollTimer.Tick += PollControllers;
         _pollTimer.Start();
@@ -64,8 +80,12 @@ public partial class MainWindow : Window
         }
         catch (DllNotFoundException)
         {
-            _pollTimer.Stop();
-            SetStatus("XInput is not available on this Windows installation.", isError: true);
+            HandleXInputUnavailable();
+            return;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            HandleXInputUnavailable();
             return;
         }
 
@@ -74,11 +94,29 @@ public partial class MainWindow : Window
 
         if (_isRunning && _virtualController is not null)
         {
-            _virtualController.SetAxisValue(Xbox360Axis.LeftThumbX, smoothed.X);
-            _virtualController.SetAxisValue(Xbox360Axis.LeftThumbY, smoothed.Y);
+            try
+            {
+                _virtualController.SetAxisValue(Xbox360Axis.LeftThumbX, smoothed.X);
+                _virtualController.SetAxisValue(Xbox360Axis.LeftThumbY, smoothed.Y);
+            }
+            catch (Exception exception) when (IsKnownViGEmFailure(exception))
+            {
+                StopSmoothing();
+                SetStatus($"Virtual controller communication failed: {exception.Message}", isError: true);
+                return;
+            }
         }
 
-        if (Environment.TickCount64 - _lastDisplayUpdate >= 50)
+        if (_isRunning && _lastReportedInputConnection != reading.Connected)
+        {
+            SetStatus(reading.Connected
+                ? "Input controller connected. Filtered output is active."
+                : "Input controller disconnected. Virtual stick output is neutral until it reconnects.",
+                isError: !reading.Connected);
+            _lastReportedInputConnection = reading.Connected;
+        }
+
+        if (Environment.TickCount64 - _lastDisplayUpdate >= DisplayIntervalMilliseconds)
         {
             RawValuesText.Text = $"X: {reading.X,6}    Y: {reading.Y,6}";
             SmoothedValuesText.Text = $"X: {smoothed.X,6}    Y: {smoothed.Y,6}";
@@ -93,7 +131,25 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_latestReadings[SelectedSlot].Connected)
+        int selectedSlot = SelectedSlot;
+        try
+        {
+            bool connected = TryReadController((uint)selectedSlot, out short x, out short y);
+            _latestReadings[selectedSlot] = new InputReading(connected, x, y);
+            ControllerSlots[selectedSlot].Update(connected, x, y);
+        }
+        catch (DllNotFoundException)
+        {
+            HandleXInputUnavailable();
+            return;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            HandleXInputUnavailable();
+            return;
+        }
+
+        if (!_latestReadings[selectedSlot].Connected)
         {
             SetStatus("The selected XInput slot is disconnected. Connect a controller or select another slot.", isError: true);
             return;
@@ -114,15 +170,17 @@ public partial class MainWindow : Window
                 _virtualController = _virtualControllerClient.CreateXbox360Controller();
                 _virtualController.Connect();
             }
-            catch (Nefarius.ViGEm.Client.Exceptions.VigemBusNotFoundException)
+            catch (Exception exception) when (IsKnownViGEmFailure(exception))
             {
                 StopVirtualController();
-                SetStatus("ViGEmBus was not found. Install the signed ViGEmBus driver, then restart Windows.", isError: true);
+                SetStatus(GetVirtualControllerStartupMessage(exception), isError: true);
                 return;
             }
         }
 
+        ResetFilter();
         _isRunning = true;
+        _lastReportedInputConnection = _latestReadings[selectedSlot].Connected;
         StartButton.IsEnabled = false;
         StopButton.IsEnabled = true;
         ControllerSelector.IsEnabled = false;
@@ -142,6 +200,7 @@ public partial class MainWindow : Window
     private void StopSmoothing()
     {
         _isRunning = false;
+        _lastReportedInputConnection = null;
         StopVirtualController();
         StartButton.IsEnabled = true;
         StopButton.IsEnabled = false;
@@ -174,9 +233,9 @@ public partial class MainWindow : Window
         }
 
         bool isValid = TryReadParameterInputs(out string validationMessage);
-        SetParameterInputState(DriftZoneInput, isValid || IsInRange(DriftZoneInput.Text, 0, 10000));
-        SetParameterInputState(VelocityCutoffInput, isValid || IsInRange(VelocityCutoffInput.Text, 0, 1500));
-        SetParameterInputState(SettleDelayInput, isValid || IsInRange(SettleDelayInput.Text, 1, 60));
+        SetParameterInputState(DriftZoneInput, isValid || IsInRange(DriftZoneInput.Text, MinimumDriftZone, MaximumDriftZone));
+        SetParameterInputState(VelocityCutoffInput, isValid || IsInRange(VelocityCutoffInput.Text, MinimumVelocityCutoff, MaximumVelocityCutoff));
+        SetParameterInputState(SettleDelayInput, isValid || IsInRange(SettleDelayInput.Text, MinimumSettleDelayFrames, MaximumSettleDelayFrames));
 
         if (!isValid)
         {
@@ -193,8 +252,11 @@ public partial class MainWindow : Window
         {
             if (!_isRunning)
             {
-                StartButton.IsEnabled = true;
-                SetStatus("Ready. Valid parameter values are applied immediately.");
+                StartButton.IsEnabled = _xInputAvailable;
+                if (_xInputAvailable)
+                {
+                    SetStatus("Ready. Valid parameter values are applied immediately.");
+                }
             }
             else
             {
@@ -248,27 +310,37 @@ public partial class MainWindow : Window
 
     private bool TryReadParameterInputs(out string validationMessage)
     {
-        if (!TryParseInRange(DriftZoneInput.Text, 0, 10000, out int driftZone))
+        if (!TryParseInRange(DriftZoneInput.Text, MinimumDriftZone, MaximumDriftZone, out int driftZone))
         {
             validationMessage = "Drift zone must be a whole number from 0 to 10000.";
             return false;
         }
 
-        if (!TryParseInRange(VelocityCutoffInput.Text, 0, 1500, out int velocityCutoff))
+        if (!TryParseInRange(VelocityCutoffInput.Text, MinimumVelocityCutoff, MaximumVelocityCutoff, out int velocityCutoff))
         {
             validationMessage = "Velocity cutoff must be a whole number from 0 to 1500.";
             return false;
         }
 
-        if (!TryParseInRange(SettleDelayInput.Text, 1, 60, out int settleDelayFrames))
+        if (!TryParseInRange(SettleDelayInput.Text, MinimumSettleDelayFrames, MaximumSettleDelayFrames, out int settleDelayFrames))
         {
             validationMessage = "Settle delay must be a whole number from 1 to 60.";
             return false;
         }
 
+        bool parametersChanged =
+            _driftZone != driftZone ||
+            _velocityCutoff != velocityCutoff ||
+            _settleDelayFrames != settleDelayFrames;
+
         _driftZone = driftZone;
         _velocityCutoff = velocityCutoff;
         _settleDelayFrames = settleDelayFrames;
+        if (parametersChanged)
+        {
+            ResetFilter();
+        }
+
         validationMessage = string.Empty;
         return true;
     }
@@ -308,6 +380,39 @@ public partial class MainWindow : Window
         return false;
     }
 
+    private void HandleXInputUnavailable()
+    {
+        _xInputAvailable = false;
+        _pollTimer.Stop();
+        StopSmoothing();
+        SetStatus("XInput is not available on this Windows installation.", isError: true);
+        StartButton.IsEnabled = false;
+    }
+
+    private static bool IsKnownViGEmFailure(Exception exception) =>
+        exception is VigemBusNotFoundException or
+            VigemBusAccessFailedException or
+            VigemBusInvalidHandleException or
+            VigemBusVersionMismatchException or
+            VigemNoFreeSlotException or
+            VigemAllocFailedException or
+            VigemAlreadyConnectedException or
+            VigemInvalidTargetException or
+            VigemInvalidParameterException or
+            VigemCallbackAlreadyRegisteredException or
+            VigemCallbackNotFoundException or
+            VigemIsDisposingException or
+            VigemNotSupportedException or
+            VigemRemovalFailedException or
+            VigemTargetNotPluggedInException or
+            VigemTargetUninitializedException or
+            Xbox360UserIndexNotReportedException;
+
+    private static string GetVirtualControllerStartupMessage(Exception exception) =>
+        exception is VigemBusNotFoundException
+            ? "ViGEmBus was not found. Install the signed ViGEmBus driver, then restart Windows."
+            : $"Could not start the virtual controller: {exception.Message}";
+
     protected override void OnClosing(CancelEventArgs e)
     {
         _pollTimer.Stop();
@@ -316,7 +421,7 @@ public partial class MainWindow : Window
     }
 
     [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
-    private static extern int XInputGetState(uint userIndex, out XInputState state);
+    private static extern uint XInputGetState(uint userIndex, out XInputState state);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct XInputGamepad
