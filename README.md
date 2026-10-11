@@ -29,7 +29,7 @@ Accepted ranges: drift zone `0–10000`, velocity cutoff `0–1500`, and settle 
 
 ## Requirements
 
-- Windows with XInput support
+- Windows with XInput support and .NET9/10 Desktop runtime installed
 - A connected XInput-compatible controller
 - The signed ViGEmBus driver for virtual-controller mode
     - https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0
