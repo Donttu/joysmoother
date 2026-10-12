@@ -50,18 +50,4 @@ Within the game itself, you can see the effects of the software when you compare
 
 In the game settings -> Misc -> change the "Analogue steer smooth" to something like 0.80 to smooth out the snappyness.
 
-## Build and publish
-
-Build from the project folder:
-
-```powershell
-dotnet build
-```
-
-Publish a self-contained, single-file Windows x64 app:
-
-```powershell
-dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
-```
-
-The published app runs without a separately installed .NET runtime. Virtual-controller mode still requires the ViGEmBus driver.
+## TODO
